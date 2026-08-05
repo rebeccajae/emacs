@@ -1,0 +1,13 @@
+custom.el
+eln-cache/
+.desktop
+.desktop.lock
+# when adding frame geom saving uncomment
+# frame-geometry.el
+auto-save-list/
+*.#
+.#*
+*~
+elpa/
+transient/
+

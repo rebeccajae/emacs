@@ -1,0 +1,66 @@
+#+title: Emacs Notes
+
+* Patterns
+** Bind an existing command
+Find the function.
+
+SPC h k
+    Press the key
+
+or
+
+SPC SPC
+    Search for the command.
+
+Then:
+
+(my/leader
+  "..." '(the-function :which-key "..."))
+
+** Evaluate one expression
+SPC a e
+
+[[help:eval-last-sexp]]
+
+** Reload config
+SPC n r
+[[help:my/reload-config]]
+
+** Make a new command
+(defun my/foo ()
+  (interactive)
+  ...)
+
+Then bind it.
+
+[[help:defun]]
+[[help:interactive]]
+
+** Install a package
+(use-package foo
+  :config
+  ...)
+
+[[help:use-package]]
+
+
+* How do I discover things?
+** Keys:
+SPC h k
+[[help:describe-key]]
+    
+** Functions:
+SPC h f
+[[help:describe-function]]
+
+** Variables:
+SPC h v
+[[help:describe-variable]]
+
+** Packages:
+[[help:describe-package]]
+
+** Source:
+[[help:find-function]]
+    
+    
