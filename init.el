@@ -105,7 +105,7 @@
  'default
  nil
  :family "Berkeley Mono"
- :height 160)
+ :height 180)
 
 
 ;;; Visual Scanning
@@ -200,6 +200,12 @@
    :extend t)
 
   (global-hl-line-mode 1))
+
+;;;; Rainbow parens
+
+(use-package rainbow-delimiters
+  :hook
+  (prog-mode . rainbow-delimiters-mode))
 
 
 ;;;; Tab Bar
