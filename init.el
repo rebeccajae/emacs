@@ -14,6 +14,7 @@
 
 (require 'package)
 (require 'cl-lib)
+(require 'seq)
 
 (setq package-archives
       '(("gnu"    . "https://elpa.gnu.org/packages/")
@@ -89,6 +90,103 @@
 
 ;; Temporary escape hatch while the leader-key setup evolves.
 (keymap-global-set "C-c r" #'my/reload-config)
+
+
+;;; Local Private Configuration
+
+;; Machine-specific or private values live in local.el.
+;; Examples:
+;; - Remote hosts
+;; - Company-specific commands
+;; - Local filesystem paths
+;; - Secrets
+
+(defvar my/remote-targets nil
+  "Configured remote targets, usually populated by local.el.")
+
+(defvar my/local-config-file
+  (expand-file-name "local.el" user-emacs-directory)
+  "Path to private, machine-specific Emacs configuration.")
+
+(when (file-readable-p my/local-config-file)
+  (load my/local-config-file :no-error))
+
+;;; Remote Targets
+
+(defun my/remote-target-path (target)
+  "Build a TRAMP path from TARGET."
+  (let ((host (plist-get target :host))
+        (path (plist-get target :path)))
+    (unless (and (stringp host)
+                 (stringp path)
+                 (string-prefix-p "/" path))
+      (user-error "Invalid remote target: %S" target))
+    (format "/ssh:%s:%s" host path)))
+
+(defun my/open-remote-target ()
+  "Choose a remote machine and show its configured root in Treemacs."
+  (interactive)
+  (let* ((name
+          (completing-read
+           "Remote machine: "
+           (mapcar #'car my/remote-targets)
+           nil
+           :require-match))
+         (target
+          (alist-get name my/remote-targets nil nil #'string=))
+         (path
+          (file-name-as-directory
+           (my/remote-target-path target))))
+
+    ;; Establish the TRAMP connection and validate the configured root.
+    (unless (file-directory-p path)
+      (user-error "Remote directory does not exist: %s" path))
+
+    ;; Open Treemacs rooted at the machine's configured browse directory.
+    (let ((default-directory path))
+      (treemacs-add-and-display-current-project-exclusively))))
+
+(defun my/disconnect-remotes ()
+  "Close Treemacs' current remote workspace and disconnect TRAMP."
+  (interactive)
+
+  ;; Close Treemacs first while its remote buffers are still reachable.
+  (when (fboundp 'treemacs-kill-buffer)
+    (treemacs-kill-buffer))
+
+  ;; Kill open remote file and directory buffers.
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (file-remote-p default-directory)
+        (kill-buffer buffer))))
+
+  ;; Tear down TRAMP processes and cached connections.
+  (tramp-cleanup-all-connections)
+
+  (message "Remote workspace disconnected."))
+
+
+;;; Remote Indicators
+
+(defun my/remote-location-label ()
+  "Return a short label for the current buffer's remote location."
+  (when-let ((remote (file-remote-p default-directory)))
+    (format " REMOTE:%s"
+            (or (file-remote-p remote 'host)
+                remote))))
+
+(setq-default mode-line-format
+              (append
+               mode-line-format
+               '((:eval (my/remote-location-label)))))
+
+(setq frame-title-format
+      '(:eval
+        (if-let ((host (file-remote-p default-directory 'host)))
+            (format "%s — REMOTE:%s"
+                    (buffer-name)
+                    host)
+          (buffer-name))))
 
 
 ;;; macOS Environment
@@ -304,6 +402,16 @@
 ;; These are buffer/file tabs for each pane, not workspace tabs.
 (global-tab-line-mode 1)
 
+(defun my/tab-line-buffer-name (buffer &optional _buffers)
+  "Return BUFFER's tab label, marking remote buffers with [R]."
+  (with-current-buffer buffer
+    (let ((name (buffer-name buffer)))
+      (if (file-remote-p default-directory)
+          (format "[R] %s" name)
+        name))))
+
+(setq tab-line-tab-name-function #'my/tab-line-buffer-name)
+
 
 ;;; Configuration Navigation
 
@@ -344,7 +452,7 @@
 
 ;;; Tree
 
-;; Treemacs owns the persistent left-side project tree.
+;; Treemacs owns the persistent full-height left-side project tree.
 (use-package treemacs
   :defer t
   :config
@@ -400,21 +508,13 @@
       display-buffer-pop-up-window)
      (inhibit-same-window . t)))
 
-  ;; Compilation and shells remain at the bottom.
+  ;; Compilation output remains at the bottom.
   (my/set-display-buffer-rule
    "\\*compilation\\*"
    '((display-buffer-in-side-window)
      (side . bottom)
      (slot . 0)
      (window-height . 0.28)))
-
-  (my/set-display-buffer-rule
-   "\\*terminal:"
-   '((display-buffer-in-side-window)
-     (side . bottom)
-     (slot . 0)
-     (window-height . 0.28)
-     (window-parameters . ((no-delete-other-windows . t)))))
 
   (message "Wide layout enabled."))
 
@@ -436,21 +536,13 @@
      (slot . 0)
      (window-width . 0.36)))
 
-  ;; Compilation and terminal-like output live along the bottom.
+  ;; Compilation output lives along the bottom.
   (my/set-display-buffer-rule
    "\\*compilation\\*"
    '((display-buffer-in-side-window)
      (side . bottom)
      (slot . 0)
      (window-height . 0.28)))
-
-  (my/set-display-buffer-rule
-   "\\*terminal:"
-   '((display-buffer-in-side-window)
-     (side . bottom)
-     (slot . 0)
-     (window-height . 0.28)
-     (window-parameters . ((no-delete-other-windows . t)))))
 
   (message "Compact layout enabled."))
 
@@ -463,6 +555,110 @@
 
 ;; Choose an initial policy once the graphical frame is ready.
 (add-hook 'emacs-startup-hook #'my/layout-automatic)
+
+
+;;; Terminal
+
+;; A terminal belongs to the location of the buffer from which it was opened:
+;;
+;; - In a local file, it opens locally in that file's directory.
+;; - In a TRAMP file, it opens on that remote machine and in that directory.
+;;
+;; The terminal splits only a normal editor pane. Treemacs remains full-height
+;; along the left margin.
+
+(use-package vterm
+  :commands vterm
+  :custom
+  (vterm-max-scrollback 10000)
+  :config
+  ;; Fallback interactive shell for TRAMP-backed terminals.
+  (add-to-list 'vterm-tramp-shells '(t "/bin/bash")))
+
+(defun my/terminal-location-name ()
+  "Return a short name for the current local or remote location."
+  (if-let ((host (file-remote-p default-directory 'host)))
+      host
+    "local"))
+
+(defun my/terminal-buffer-name ()
+  "Return the terminal buffer name for the current location."
+  (format "*terminal:%s*" (my/terminal-location-name)))
+
+(defun my/terminal-buffer-p (buffer)
+  "Return non-nil when BUFFER is one of my terminal buffers."
+  (string-prefix-p "*terminal:" (buffer-name buffer)))
+
+(defun my/editor-window-p (window)
+  "Return non-nil when WINDOW is suitable for normal editor content."
+  (let ((buffer (window-buffer window)))
+    (with-current-buffer buffer
+      (and
+       ;; Treemacs must remain full-height.
+       (not (derived-mode-p 'treemacs-mode))
+
+       ;; Never split an existing terminal pane.
+       (not (my/terminal-buffer-p buffer))
+
+       ;; Avoid minibuffers and dedicated side windows such as help panes.
+       (not (window-minibuffer-p window))
+       (not (window-parameter window 'window-side))))))
+
+(defun my/find-editor-window ()
+  "Find a normal editor window in the selected frame."
+  (or
+   ;; Prefer the selected window when it is suitable.
+   (and (my/editor-window-p (selected-window))
+        (selected-window))
+
+   ;; Otherwise choose the first suitable normal editor window.
+   (seq-find #'my/editor-window-p
+             (window-list nil 'no-minibuffer))
+
+   (user-error "No suitable editor window exists")))
+
+(defun my/create-terminal-window ()
+  "Create and return a terminal pane below a normal editor window."
+  (let* ((editor-window (my/find-editor-window))
+         (editor-height (window-total-height editor-window))
+         (terminal-height
+          (min
+           ;; Leave enough room for the editor.
+           (max 8 (round (* editor-height 0.28)))
+           (max 8 (- editor-height 8)))))
+    (split-window editor-window (- terminal-height) 'below)))
+
+(defun my/show-terminal (buffer-name origin-directory)
+  "Show BUFFER-NAME below an editor window.
+
+Create a vterm rooted at ORIGIN-DIRECTORY when the buffer does not yet
+exist."
+  (let ((terminal-window (my/create-terminal-window)))
+    (select-window terminal-window)
+
+    (if-let ((buffer (get-buffer buffer-name)))
+        (switch-to-buffer buffer)
+
+      (let ((default-directory origin-directory))
+        (vterm buffer-name)))))
+
+(defun my/toggle-terminal ()
+  "Show or hide the terminal for the current local or remote location."
+  (interactive)
+
+  ;; Capture these before switching windows or buffers.
+  (let* ((origin-directory default-directory)
+         (buffer-name (my/terminal-buffer-name))
+         (buffer (get-buffer buffer-name))
+         (window (and buffer
+                      (get-buffer-window buffer t))))
+
+    (if window
+        ;; Terminal is visible: collapse it.
+        (delete-window window)
+
+      ;; Reuse or create the terminal below an editor pane.
+      (my/show-terminal buffer-name origin-directory))))
 
 
 ;;; Language Support
@@ -537,64 +733,6 @@ not unexpectedly initiate another slow gateway connection."
   (which-key-mode 1))
 
 
-;;; Terminal
-
-;; A terminal belongs to the location of the current buffer:
-;;
-;; - In a local file, it opens locally.
-;; - In a TRAMP file, it opens on that remote machine.
-;;
-;; Terminal windows appear at the bottom and can be collapsed with the
-;; same command that opened them.
-
-(use-package vterm
-  :commands vterm
-  :custom
-  (vterm-max-scrollback 10000)
-
-  :config
-  ;; Select the shell used for TRAMP-backed terminals.
-  ;; `t` supplies the fallback for every TRAMP method.
-  (add-to-list 'vterm-tramp-shells '(t "/bin/bash")))
-
-
-(defun my/terminal-location-name ()
-  "Return a short name for the current local or remote location."
-  (if-let ((host (file-remote-p default-directory 'host)))
-      host
-    "local"))
-
-
-(defun my/terminal-buffer-name ()
-  "Return the terminal buffer name for the current location."
-  (format "*terminal:%s*" (my/terminal-location-name)))
-
-
-(defun my/toggle-terminal ()
-  "Show or hide the terminal for the current local or remote location."
-  (interactive)
-
-  (let* ((origin-directory default-directory)
-         (buffer-name (my/terminal-buffer-name))
-         (buffer (get-buffer buffer-name))
-         (window (and buffer
-                      (get-buffer-window buffer))))
-
-    (cond
-     ;; The terminal is visible: collapse it.
-     (window
-      (delete-window window))
-
-     ;; The terminal already exists: show it again.
-     (buffer
-      (display-buffer buffer))
-
-     ;; Create it in the current local or TRAMP directory.
-     (t
-      (let ((default-directory origin-directory))
-        (vterm buffer-name))))))
-
-
 ;;;; Leader Keys
 
 (use-package general
@@ -632,9 +770,9 @@ not unexpectedly initiate another slow gateway connection."
     ;; Remote
 
     "r"   '(:ignore t :which-key "Remote")
+    "r r" '(my/open-remote-target :which-key "Remote picker")
     "r f" '(my/find-remote-file :which-key "Find remote file")
-    "r d" '(tramp-cleanup-all-connections
-            :which-key "Disconnect all")
+    "r d" '(my/disconnect-remotes :which-key "Disconnect all")
 
     ;; Help
 
@@ -666,11 +804,8 @@ not unexpectedly initiate another slow gateway connection."
     "w d" '(delete-window :which-key "Delete")
     "w o" '(delete-other-windows :which-key "Only this")
 
-    ;; Terminal
-    "t"   '(:ignore t :which-key "Terminal")
-    "t t" '(my/toggle-terminal :which-key "Toggle")
-
     ;; Navigation uses hjkl, but Which-Key provides readable descriptions.
+
     "w h" '(windmove-left :which-key "move left")
     "w j" '(windmove-down :which-key "move down")
     "w k" '(windmove-up :which-key "move up")
@@ -681,6 +816,11 @@ not unexpectedly initiate another slow gateway connection."
     "w w" '(my/layout-wide :which-key "Wide layout")
     "w c" '(my/layout-compact :which-key "Compact layout")
     "w a" '(my/layout-automatic :which-key "Automatic layout")
+
+    ;; Terminal
+
+    "t"   '(:ignore t :which-key "Terminal")
+    "t t" '(my/toggle-terminal :which-key "Toggle")
 
     ;; Quit
 

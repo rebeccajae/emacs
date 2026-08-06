@@ -1,0 +1,12 @@
+;;; local.el --- Private machine-specific configuration
+
+(setq my/remote-targets
+      '(("Some Computer"
+         . (:host "some-ssh-hostname"
+            :path "/path/to/project"))
+
+        ("Home Server"
+         . (:host "home-server"
+            :path "/srv/projects"))))
+
+;;; local.el ends here

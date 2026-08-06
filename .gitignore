@@ -10,4 +10,8 @@ auto-save-list/
 *~
 elpa/
 transient/
+tramp
+projects
+# Private machine-specific configuration
+local.el
 
