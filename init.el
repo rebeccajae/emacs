@@ -375,6 +375,21 @@
  :height 160)
 
 
+;;; Scrolling and Navigation
+
+(use-package scroll-restore
+  :ensure t
+  :config
+  (setq scroll-restore-handle-cursor t
+        scroll-restore-handle-region t
+        scroll-restore-jump-back t)
+
+  (scroll-restore-mode 1))
+
+(setq mouse-wheel-follow-mouse t
+      mouse-wheel-progressive-speed nil)
+
+
 ;;; Visual Scanning
 
 ;;;; Line Numbers
@@ -535,6 +550,16 @@
 
 ;;; Editing
 
+
+;;; Mouse Editing
+
+;; Keep mouse selection behavior predictable.
+(setq mouse-drag-copy-region nil)
+
+(setq select-enable-primary nil
+      select-enable-clipboard t)
+
+
 ;;;; Evil
 
 ;; Evil supplies composable Vim-style editing without requiring the rest of
@@ -550,6 +575,19 @@
   :after evil
   :config
   (evil-collection-init))
+
+(defun my/evil-delete-no-yank ()
+  "Delete visual selection without replacing the kill ring."
+  (interactive)
+  (evil-delete (region-beginning)
+               (region-end)
+               evil-visual-char
+               ?_))
+
+(with-eval-after-load 'evil
+  (define-key evil-visual-state-map
+              (kbd "d")
+              #'my/evil-delete-no-yank))
 
 
 ;;;; Evil Escape
