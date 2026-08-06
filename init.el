@@ -88,9 +88,16 @@
   (my/refresh-alternate-lines)
   (message "Configuration reloaded."))
 
+(defun my/open-explorer ()
+  "Open the explorer."
+  (interactive)
+
+  (if my/current-workspace-root
+      (my/show-explorer)
+    (my/select-explorer-root)))
+
 ;; Temporary escape hatch while the leader-key setup evolves.
 (keymap-global-set "C-c r" #'my/reload-config)
-
 
 ;;; Local Private Configuration
 
@@ -104,12 +111,30 @@
 (defvar my/remote-targets nil
   "Configured remote targets, usually populated by local.el.")
 
+(defvar my/current-workspace-root nil
+  "The directory currently displayed by the explorer.")
+
+;; This is a workaround to treemacs not liking having nothing open.
+;; we put this some random place on disk and use it as a dummy
+;; if you open an enclosing directory it may be visible, but
+;; we don't expect it if you're in ~/.
+(defvar my/explorer-empty-root
+  (expand-file-name "empty-explorer"
+                    temporary-file-directory)
+  "Directory used when no workspace is selected.")
+
+(defun my/ensure-empty-explorer-root ()
+  "Create the empty explorer root if it does not exist."
+  (unless (file-directory-p my/explorer-empty-root)
+    (make-directory my/explorer-empty-root t)))
+
 (defvar my/local-config-file
   (expand-file-name "local.el" user-emacs-directory)
   "Path to private, machine-specific Emacs configuration.")
 
 (when (file-readable-p my/local-config-file)
   (load my/local-config-file :no-error))
+
 
 ;;; Remote Targets
 
@@ -123,17 +148,98 @@
       (user-error "Invalid remote target: %S" target))
     (format "/ssh:%s:%s" host path)))
 
+(defun my/open-workspace-root (path)
+  "Open PATH as the current explorer root."
+  (setq my/current-workspace-root path)
+
+  (cl-letf (((symbol-function 'read-directory-name)
+             (lambda (&rest _)
+               path)))
+    (call-interactively #'treemacs-select-directory)))
+
+(defun my/reconcile-explorer ()
+  "Make Treemacs match the current workspace state."
+
+  (unless (file-directory-p my/explorer-empty-root)
+    (make-directory my/explorer-empty-root t))
+
+  (if my/current-workspace-root
+      (progn
+        (let ((path my/current-workspace-root))
+          (cl-letf (((symbol-function 'read-directory-name)
+                     (lambda (&rest _)
+                       path)))
+            (call-interactively #'treemacs-select-directory)))
+
+        (my/show-explorer))
+
+    ;; Keep Treemacs internally valid, but hide it from the user.
+    (let ((path my/explorer-empty-root))
+      (cl-letf (((symbol-function 'read-directory-name)
+                 (lambda (&rest _)
+                   path)))
+        (call-interactively #'treemacs-select-directory)))
+
+    (my/hide-explorer)))
+
+(defun my/clear-explorer ()
+  "Return the explorer to an undefined state."
+  (interactive)
+
+  (setq my/current-workspace-root nil)
+
+  (my/reconcile-explorer)
+
+  (message "Explorer cleared."))
+
+(defun my/show-explorer ()
+  "Show the explorer."
+  (interactive)
+  (treemacs))
+
+(defun my/hide-explorer ()
+  "Hide the explorer."
+  (interactive)
+  (when-let ((window (treemacs-get-local-window)))
+    (delete-window window)))
+
+(defun my/select-explorer-root ()
+  "Prompt for a real explorer root."
+  (interactive)
+
+  (let ((default-directory
+         (if (or (null my/current-workspace-root)
+                 (string= (file-truename default-directory)
+                          (file-truename my/explorer-empty-root)))
+             (expand-file-name "~/")
+           default-directory)))
+
+    (let ((path
+           (read-directory-name
+            "Explorer root: "
+            default-directory)))
+
+      (when (string= (file-truename path)
+                     (file-truename my/explorer-empty-root))
+        (user-error "The empty explorer root is internal"))
+
+      (my/open-workspace-root
+       (file-name-as-directory path)))))
+
 (defun my/open-remote-target ()
   "Choose a remote machine and show its configured root in Treemacs."
   (interactive)
+
   (let* ((name
           (completing-read
            "Remote machine: "
            (mapcar #'car my/remote-targets)
            nil
            :require-match))
+
          (target
           (alist-get name my/remote-targets nil nil #'string=))
+
          (path
           (file-name-as-directory
            (my/remote-target-path target))))
@@ -142,27 +248,31 @@
     (unless (file-directory-p path)
       (user-error "Remote directory does not exist: %s" path))
 
-    ;; Open Treemacs rooted at the machine's configured browse directory.
-    (let ((default-directory path))
-      (treemacs-add-and-display-current-project-exclusively))))
+    (my/open-workspace-root path)))
+
 
 (defun my/disconnect-remotes ()
-  "Close Treemacs' current remote workspace and disconnect TRAMP."
+  "Return from a remote workspace to a local state."
   (interactive)
 
-  ;; Close Treemacs first while its remote buffers are still reachable.
-  (when (fboundp 'treemacs-kill-buffer)
-    (treemacs-kill-buffer))
-
-  ;; Kill open remote file and directory buffers.
+  ;; Close remote file buffers.
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (file-remote-p default-directory)
         (kill-buffer buffer))))
 
-  ;; Tear down TRAMP processes and cached connections.
+  ;; Close remote terminals.
+  (dolist (buffer (buffer-list))
+    (when (string-prefix-p "*terminal:"
+                           (buffer-name buffer))
+      (kill-buffer buffer)))
+
+  ;; Disconnect TRAMP.
   (tramp-cleanup-all-connections)
 
+  ;; clear explorer
+  (my/clear-explorer)
+  
   (message "Remote workspace disconnected."))
 
 
@@ -205,6 +315,9 @@
 (tool-bar-mode -1)
 
 (setq inhibit-startup-screen t)
+
+;; Accept y/n instead of spelling out yes/no.
+(setq use-short-answers t)
 
 
 ;;; Frame Geometry
@@ -454,6 +567,7 @@
 ;;; Tree
 
 ;; Treemacs owns the persistent full-height left-side project tree.
+
 (use-package treemacs
   :defer t
   :config
@@ -799,7 +913,7 @@ not unexpectedly initiate another slow gateway connection."
     ;; Windows
 
     "w"   '(:ignore t :which-key "Window")
-    "w t" '(treemacs :which-key "Tree")
+    "w t" '(my/open-explorer :which-key "Tree")
     "w v" '(split-window-right :which-key "split Vertical")
     "w z" '(split-window-below :which-key "split horiZontal")
     "w d" '(delete-window :which-key "Delete")
