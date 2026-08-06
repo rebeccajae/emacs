@@ -269,7 +269,8 @@
 ;; Show absolute locations and keep the gutter from changing width.
 (setq display-line-numbers-type t
       display-line-numbers-width-start t
-      display-line-numbers-grow-only t)
+      display-line-numbers-grow-only t
+      column-number-mode t)
 
 (add-hook 'prog-mode-hook #'display-line-numbers-mode)
 
