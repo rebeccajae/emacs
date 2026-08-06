@@ -800,7 +800,7 @@ not unexpectedly initiate another slow gateway connection."
     "w"   '(:ignore t :which-key "Window")
     "w t" '(treemacs :which-key "Tree")
     "w v" '(split-window-right :which-key "split Vertical")
-    "w s" '(split-window-below :which-key "split horiZontal")
+    "w z" '(split-window-below :which-key "split horiZontal")
     "w d" '(delete-window :which-key "Delete")
     "w o" '(delete-other-windows :which-key "Only this")
 
