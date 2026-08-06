@@ -78,6 +78,7 @@
   (find-file my/emacs-notes-file))
 
 ;; Temporary escape hatch while the leader-key setup is evolving.
+
 (keymap-global-set "C-c r" #'my/reload-config)
 
 
@@ -85,10 +86,16 @@
 
 ;; The toolbar mostly duplicates actions already available through Evil or
 ;; the command palette.
+
 (tool-bar-mode -1)
 
 (setq inhibit-startup-screen t)
 
+;;; Shell Stuff
+
+(use-package exec-path-from-shell
+  :config
+  (exec-path-from-shell-initialize))
 
 ;;; Theme
 
@@ -104,8 +111,8 @@
 (set-face-attribute
  'default
  nil
- :family "Berkeley Mono"
- :height 180)
+ :family "MonoLisaCode"
+ :height 160)
 
 
 ;;; Visual Scanning
@@ -237,6 +244,57 @@
   :config
   (evil-collection-init))
 
+(use-package evil-escape
+  ; Bind double-tap j to escape
+  :after evil
+  :init
+  (setq evil-escape-key-sequence "jj"
+	evil-escape-delay 0.25)
+  :config
+  (evil-escape-mode 1))
+
+
+;;; Tree Config
+
+(use-package treemacs
+  :defer t
+  :config
+  (setq treemacs-width 35)
+  (define-key treemacs-mode-map
+	      [mouse-1]
+	      #'treemacs-RET-action)
+  (treemacs-follow-mode 1)
+  (treemacs-filewatch-mode 1))
+
+;;;; Language Support
+
+;;; General
+
+(use-package eglot
+  :ensure nil
+  :commands eglot eglot-ensure)
+
+
+;;; Rust
+
+(use-package rust-mode
+  :mode "\\.rs\\'"
+  :hook
+  (rust-mode . eglot-ensure)
+  :config
+  (setq rust-format-on-save nil))
+
+
+;;; Go
+
+(use-package go-mode
+  :mode "\\.go\\'"
+  :hook
+  (go-mode . eglot-ensure))
+
+
+;;; Python
+
 
 ;;; Discoverability
 
@@ -280,6 +338,18 @@
     "h f" '(describe-function :which-key "describe Function")
     "h v" '(describe-variable :which-key "describe Variable")
     "h n" '(my/open-emacs-notes :which-key "Notes")
+
+    "c"   '(:ignore t :which-key "Code")
+    "c d" '(xref-find-definitions :which-key "Definition")
+    "c r" '(xref-find-references :which-key "References")
+    "c b" '(xref-go-back :which-key "go Back")
+    "c w" '(xref-go-forward :which-key "go forWard")
+    "c a" '(eglot-code-actions :which-key "Actions")
+    "c f" '(eglot-format-buffer :which-key "Format")
+    "c h" '(eldoc-doc-buffer :which-key "Help at point")
+
+    "w"   '(:ignore t :which-key "Window")
+    "w t" '(treemacs :which-key "Tree")
 
     "q"   '(:ignore t :which-key "Quit")
     "q q" '(save-buffers-kill-terminal :which-key "Quit Emacs")))
