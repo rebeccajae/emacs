@@ -507,6 +507,31 @@
 ;; These are buffer/file tabs for each pane, not workspace tabs.
 (global-tab-line-mode 1)
 
+(defun my/find-file-by-path ()
+  "Open a file by typing its local or remote path in the minibuffer."
+  (interactive)
+  (let ((use-dialog-box nil)
+        (use-file-dialog nil))
+    (call-interactively #'find-file)))
+
+(defun my/tab-line-new-tab (event)
+  "Show tab creation choices at mouse EVENT."
+  (interactive "e")
+  (when (tab-line-track-tap event)
+    (let ((menu (mouse-buffer-menu-keymap)))
+      (keymap-set
+       menu
+       "<open-file>"
+       '(menu-item "Open file by path…" my/find-file-by-path
+                   :help "Open a local or remote file by path"))
+      (popup-menu menu event))))
+
+;; Keep the standard buffer menu behind the plus button, with an additional
+;; option for opening a file that is not already represented by a buffer.
+(keymap-set tab-line-add-map
+            "<tab-line> <down-mouse-1>"
+            #'my/tab-line-new-tab)
+
 (defun my/tab-line-buffer-name (buffer &optional _buffers)
   "Return BUFFER's tab label, marking remote buffers with [R]."
   (with-current-buffer buffer
@@ -957,7 +982,7 @@ not unexpectedly initiate another slow gateway connection."
     ;; Files
 
     "f"   '(:ignore t :which-key "Files")
-    "f f" '(find-file :which-key "Find")
+    "f f" '(my/find-file-by-path :which-key "Find by path")
     "f s" '(save-buffer :which-key "Save")
 
     ;; Help
