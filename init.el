@@ -119,7 +119,7 @@
   "Prompt for a remote file using TRAMP."
   (interactive)
   (find-file
-   (read-file-name "Remote file: " "/ssh:")))
+   (read-file-name "Remote file: " "/sshx:")))
 
 (defun my/remote-target-path (target)
   "Build a TRAMP path from TARGET."
@@ -129,7 +129,7 @@
                  (stringp path)
                  (string-prefix-p "/" path))
       (user-error "Invalid remote target: %S" target))
-    (format "/ssh:%s:%s" host path)))
+    (format "/sshx:%s:%s" host path)))
 
 (defun my/open-workspace-root (path)
   "Open PATH as the current explorer root."
