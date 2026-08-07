@@ -132,11 +132,23 @@
   (expand-file-name "local.el" user-emacs-directory)
   "Path to private, machine-specific Emacs configuration.")
 
+(defun my/open-local-config ()
+  "Open my Emacs configuration."
+  (interactive)
+  (find-file my/local-config-file))
+
 (when (file-readable-p my/local-config-file)
   (load my/local-config-file :no-error))
 
 
 ;;; Remote Targets
+
+
+(with-eval-after-load 'tramp
+  (setopt tramp-remote-path '(tramp-own-remote-path))
+  (add-to-list
+   'tramp-connection-properties
+   (list ".*" "remote-shell" "/bin/bash")))
 
 (defun my/remote-target-path (target)
   "Build a TRAMP path from TARGET."
@@ -814,6 +826,7 @@ exist."
       (my/show-terminal buffer-name origin-directory))))
 
 
+
 ;;; Language Support
 
 ;;;; Eglot
@@ -912,6 +925,7 @@ not unexpectedly initiate another slow gateway connection."
 
     "n"   '(:ignore t :which-key "coNfiguration")
     "n e" '(my/open-config :which-key "Edit")
+    "n l" '(my/open-local-config :which-key "edit Local")
     "n r" '(my/reload-config :which-key "Reload")
 
     ;; Files
