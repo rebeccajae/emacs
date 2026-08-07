@@ -356,6 +356,28 @@
 
   (scroll-restore-mode 1))
 
+(use-package ultra-scroll
+  :after scroll-restore
+  :custom
+  ;; Scroll Restore and the code below exclusively own the displaced point,
+  ;; cursor, current-line highlight, and mark.  Ultra Scroll only moves the
+  ;; viewport at pixel precision.
+  (ultra-scroll-hide-cursor nil)
+  (ultra-scroll-hide-functions nil)
+  (ultra-scroll-preserve-column nil)
+  (ultra-scroll-push-mark nil)
+  :config
+  ;; Scroll Restore recognizes commands through this symbol property.  Without
+  ;; it, a smooth wheel event looks like ordinary point movement and replaces
+  ;; the remembered off-screen position with Ultra Scroll's surrogate point.
+  (dolist (command '(ultra-scroll
+                     ultra-scroll-mac
+                     pixel-scroll-precision))
+    (cl-pushnew command scroll-restore-commands)
+    (put command 'scroll-restore t))
+
+  (ultra-scroll-mode 1))
+
 (defun my/scroll-restore-point-offscreen-p (&optional window)
   "Return non-nil when Scroll Restore is holding point off-screen."
   (when (boundp 'scroll-restore-alist)
@@ -866,6 +888,15 @@ The normal path performs no buffer scan and creates no timer."
 (use-package evil-collection
   :after evil
   :config
+  ;; Its Ultra Scroll adapter independently hides and restores Evil's cursor,
+  ;; which conflicts with the window-specific Scroll Restore illusion above.
+  (setq evil-collection-mode-list
+        (remove 'ultra-scroll evil-collection-mode-list))
+  ;; Also clean up the adapter when reloading this file in a live session.
+  (when (boundp 'ultra-scroll-hide-functions)
+    (remove-hook
+     'ultra-scroll-hide-functions
+     #'evil-collection-ultra-scroll--set-cursor-visible))
   (evil-collection-init))
 
 (defun my/evil-delete-no-yank ()
