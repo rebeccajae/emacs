@@ -725,6 +725,10 @@ The normal path performs no buffer scan and creates no timer."
                   :local)
         (my/apply-alternate-lines)))))
 
+;; Loading this file into an existing session should behave like a clean
+;; startup, even when older buffer-local scroll hooks are still installed.
+(my/refresh-alternate-lines)
+
 
 ;;;; Current Line
 
