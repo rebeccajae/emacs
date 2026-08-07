@@ -284,6 +284,10 @@
 ;; Accept y/n instead of spelling out yes/no.
 (setq use-short-answers t)
 
+;; Let the graphical frame use arbitrary pixel dimensions instead of rounding
+;; its outer edges to whole character cells.
+(setq frame-resize-pixelwise t)
+
 
 ;;; Frame Geometry
 
