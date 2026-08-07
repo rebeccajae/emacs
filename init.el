@@ -356,49 +356,83 @@
 
   (scroll-restore-mode 1))
 
-(defun my/scroll-restore-point-offscreen-p ()
+(defun my/scroll-restore-point-offscreen-p (&optional window)
   "Return non-nil when Scroll Restore is holding point off-screen."
   (when (boundp 'scroll-restore-alist)
-    (when-let ((entry (assq (selected-window) scroll-restore-alist)))
+    (when-let ((entry (assq (or window (selected-window))
+                            scroll-restore-alist)))
       (nth 3 entry))))
 
-(defun my/scroll-restore-original-position ()
+(defun my/scroll-restore-original-position (&optional window)
   "Return the remembered point while Scroll Restore holds it off-screen."
   (when-let* ((entry (and (boundp 'scroll-restore-alist)
-                          (assq (selected-window) scroll-restore-alist)))
+                          (assq (or window (selected-window))
+                                scroll-restore-alist)))
               (offscreen (nth 3 entry))
               (original (marker-position (nth 2 entry))))
     original))
 
-(defvar-local my/scroll-restore-line-number-remap nil
-  "Face-remapping cookie used while Scroll Restore displaces point.")
+(defvar-local my/scroll-restore-line-number-filter nil
+  "Face-remapping cookie for window-specific gutter highlighting.")
 
-(defvar-local my/scroll-restore-mode-line-position nil
-  "Remembered point shown while Scroll Restore hides the real cursor.")
+;; Remove the earlier buffer-wide remap when this configuration is reloaded.
+(dolist (buffer (buffer-list))
+  (with-current-buffer buffer
+    (when-let ((cookie
+                (and (local-variable-p 'my/scroll-restore-line-number-remap)
+                     (symbol-value 'my/scroll-restore-line-number-remap))))
+      (face-remap-remove-relative cookie)
+      (kill-local-variable 'my/scroll-restore-line-number-remap))))
 
-(defvar-local my/scroll-restore-displaced-p nil
-  "Non-nil while the cursor-off-screen visual state is active.")
+(defun my/scroll-restore-install-line-number-filter ()
+  "Make displaced windows use the ordinary line-number face."
+  (unless my/scroll-restore-line-number-filter
+    (setq my/scroll-restore-line-number-filter
+          (face-remap-add-relative
+           'line-number-current-line
+           '(:filtered (:window my/scroll-restore-displaced t)
+                       line-number)))))
+
+(defun my/scroll-restore-clear-position (window)
+  "Clear the saved mode-line position belonging to WINDOW."
+  (when-let ((marker (window-parameter
+                      window
+                      'my/scroll-restore-mode-line-position)))
+    (set-marker marker nil))
+  (set-window-parameter window 'my/scroll-restore-mode-line-position nil))
 
 (defun my/scroll-restore-update-cursor-visibility ()
   "Hide cursor-related visuals while the real point is off-screen."
-  (let* ((was-displaced my/scroll-restore-displaced-p)
+  (let* ((window (selected-window))
+         (was-displaced
+          (window-parameter window 'my/scroll-restore-displaced))
          (displaced
-          (and (my/scroll-restore-point-offscreen-p)
+          (and (my/scroll-restore-point-offscreen-p window)
                (get this-command 'scroll-restore))))
-    (setq my/scroll-restore-displaced-p displaced)
+    (set-window-parameter window 'my/scroll-restore-displaced displaced)
 
     ;; Evil can restore its state-specific cursor after Scroll Restore changes
     ;; `cursor-type', so enforce both the buffer and window display settings.
     (when displaced
-      (setq cursor-type nil))
-    (internal-show-cursor (selected-window) (not displaced))
+      (setq cursor-type nil)
+      (internal-show-cursor window nil))
+    (when (and was-displaced (not displaced))
+      (internal-show-cursor window t))
 
     ;; Snapshot the remembered point in the same update that controls the
-    ;; visual illusion.  Consulting Scroll Restore's alist during mode-line
-    ;; redisplay can otherwise expose a stale marker after ordinary movement.
-    (setq my/scroll-restore-mode-line-position
-          (and displaced
-               (my/scroll-restore-original-position)))
+    ;; visual illusion.  A marker follows edits while point is off-screen.
+    (if displaced
+        (let ((position (my/scroll-restore-original-position window)))
+          (if-let ((marker (window-parameter
+                            window
+                            'my/scroll-restore-mode-line-position)))
+              (move-marker marker position (window-buffer window))
+            (set-window-parameter
+             window
+             'my/scroll-restore-mode-line-position
+             (with-current-buffer (window-buffer window)
+               (copy-marker position)))))
+      (my/scroll-restore-clear-position window))
 
     ;; Keep the active-line overlay synchronized with the same visual state.
     (cond
@@ -407,17 +441,10 @@
      (was-displaced
       (global-hl-line-highlight)))
 
-    ;; The line-number gutter highlights the surrogate cursor line separately
-    ;; from `hl-line'.  Make it look like an ordinary line number while the
-    ;; real point is displaced, then restore its normal face automatically.
-    (cond
-     ((and displaced (null my/scroll-restore-line-number-remap))
-      (setq my/scroll-restore-line-number-remap
-            (face-remap-add-relative 'line-number-current-line
-                                     'line-number)))
-     ((and (not displaced) my/scroll-restore-line-number-remap)
-      (face-remap-remove-relative my/scroll-restore-line-number-remap)
-      (setq my/scroll-restore-line-number-remap nil)))
+    ;; The filtered face applies only in a window whose parameter is non-nil,
+    ;; even when the same buffer is visible in another window.
+    (when (bound-and-true-p display-line-numbers-mode)
+      (my/scroll-restore-install-line-number-filter))
 
     ;; Unlike the built-in %l/%c constructs, our evaluated position strings
     ;; are not automatically invalidated by every ordinary point motion.
@@ -430,8 +457,13 @@
 
 (defun my/mode-line-point-position ()
   "Return the position represented as point in the mode line."
-  (or my/scroll-restore-mode-line-position
-      (point)))
+  (let ((window (selected-window)))
+    (or (when-let ((marker
+                    (window-parameter
+                     window
+                     'my/scroll-restore-mode-line-position)))
+          (marker-position marker))
+        (window-point window))))
 
 (defun my/mode-line-point-percent ()
   "Return point's percentage through the accessible buffer."
@@ -502,39 +534,125 @@
 (defvar-local my/alternate-lines-timer nil
   "Idle timer used to redraw alternating lines in this buffer.")
 
+(defconst my/alternate-lines-padding-screenfuls 12
+  "Approximate number of screenfuls to stripe beyond each window edge.")
+
+(defconst my/alternate-lines-guard-screenfuls 4
+  "Padding left when a scrolling window triggers a stripe refill.")
+
+(defconst my/alternate-lines-window-coverage-parameter
+  'my/alternate-lines-window-coverage
+  "Window parameter holding cached alternating-line coverage.")
+
 (defun my/clear-alternate-lines ()
   "Remove alternating-line overlays from the current buffer."
   (mapc #'delete-overlay my/alternate-line-overlays)
-  (setq my/alternate-line-overlays nil))
+  (setq my/alternate-line-overlays nil)
+  (dolist (window (get-buffer-window-list (current-buffer) nil t))
+    (set-window-parameter
+     window
+     my/alternate-lines-window-coverage-parameter
+     nil)))
+
+(defun my/alternate-lines-buffered-ranges ()
+  "Return merged ranges around windows displaying the current buffer.
+
+Also cache a smaller safe range for each window.  Scrolling within that
+range requires only a few comparisons; crossing it refills the larger
+painted range before an unstriped line can become visible."
+  (let ((buffer (current-buffer))
+        (tick (buffer-chars-modified-tick))
+        ranges
+        merged)
+    (dolist (window (get-buffer-window-list (current-buffer) nil t))
+      (let* ((origin (window-start window))
+             (height (max 1 (window-body-height window)))
+             (padding (* height my/alternate-lines-padding-screenfuls))
+             (safe-distance
+              (* height
+                 (- my/alternate-lines-padding-screenfuls
+                    my/alternate-lines-guard-screenfuls)))
+             (paint-start
+              (save-excursion
+                (goto-char origin)
+                (forward-line (- padding))
+                (point)))
+             (paint-end
+              (save-excursion
+                (goto-char origin)
+                (forward-line (+ height padding 1))
+                (point)))
+             (safe-start
+              (save-excursion
+                (goto-char origin)
+                (forward-line (- safe-distance))
+                (point)))
+             (safe-end
+              (save-excursion
+                (goto-char origin)
+                (forward-line safe-distance)
+                (point))))
+        (set-window-parameter
+         window
+         my/alternate-lines-window-coverage-parameter
+         (list buffer tick safe-start safe-end))
+        (push (cons paint-start paint-end) ranges)))
+    (setq ranges (sort ranges (lambda (left right)
+                                (< (car left) (car right)))))
+    (dolist (range ranges)
+      (if (and merged (<= (car range) (cdar merged)))
+          (setcdr (car merged) (max (cdar merged) (cdr range)))
+        (push (cons (car range) (cdr range)) merged)))
+    (nreverse merged)))
 
 (defun my/apply-alternate-lines ()
-  "Draw full-width backgrounds on alternating lines."
-  (my/clear-alternate-lines)
+  "Draw alternating backgrounds around visible buffer regions."
+  (let ((available my/alternate-line-overlays)
+        used)
+    (save-excursion
+      (dolist (range (my/alternate-lines-buffered-ranges))
+        (goto-char (car range))
+        (beginning-of-line)
+        (let ((line-number (line-number-at-pos)))
+          (while (< (point) (cdr range))
+            (when (cl-evenp line-number)
+              (let* ((start (line-beginning-position))
+                     ;; Include the newline so `:extend` reaches the edge.
+                     (end (min (1+ (line-end-position))
+                               (point-max)))
+                     (overlay (or (pop available)
+                                  (make-overlay start end))))
+                (move-overlay overlay start end)
+                (overlay-put overlay 'face 'my/alternate-line-face)
+                ;; Keep stripes beneath transient UI such as the current line.
+                (overlay-put overlay 'priority -50)
+                (overlay-put overlay 'evaporate t)
+                (push overlay used)))
+            (forward-line 1)
+            (setq line-number (1+ line-number))))))
+    (mapc #'delete-overlay available)
+    (setq my/alternate-line-overlays (nreverse used))))
 
-  (save-excursion
-    (goto-char (point-min))
+(defun my/refill-alternate-lines-when-needed (window new-start)
+  "Refill stripes when WINDOW scrolls near their edge at NEW-START.
 
-    (let ((line-number 1))
-      (while (< (point) (point-max))
-        (when (cl-evenp line-number)
-          (let* ((start (line-beginning-position))
-                 ;; Include the newline so `:extend` reaches the window edge.
-                 (end (min (1+ (line-end-position))
-                           (point-max)))
-                 (overlay (make-overlay start end)))
-            (overlay-put overlay 'face 'my/alternate-line-face)
-
-            ;; Keep stripes beneath transient UI such as the current line.
-            (overlay-put overlay 'priority -50)
-            (overlay-put overlay 'evaporate t)
-
-            (push overlay my/alternate-line-overlays)))
-
-        (forward-line 1)
-        (setq line-number (1+ line-number))))))
+The normal path performs no buffer scan and creates no timer."
+  (when (window-live-p window)
+    (with-current-buffer (window-buffer window)
+      (when my/alternate-lines-mode
+        (let ((coverage
+               (window-parameter
+                window
+                my/alternate-lines-window-coverage-parameter)))
+          (unless (and (eq (nth 0 coverage) (current-buffer))
+                       (eql (nth 1 coverage)
+                            (buffer-chars-modified-tick))
+                       (<= (nth 2 coverage) new-start)
+                       (<= new-start (nth 3 coverage)))
+            (my/apply-alternate-lines)))))))
 
 (defun my/schedule-alternate-lines-refresh (&rest _ignored)
-  "Redraw stripes shortly after editing pauses."
+  "Redraw stripes shortly after editing or layout changes pause."
   (when (timerp my/alternate-lines-timer)
     (cancel-timer my/alternate-lines-timer))
 
@@ -545,6 +663,7 @@
          (lambda (buffer)
            (when (buffer-live-p buffer)
              (with-current-buffer buffer
+               (setq my/alternate-lines-timer nil)
                (when my/alternate-lines-mode
                  (my/apply-alternate-lines)))))
          (current-buffer))))
@@ -559,9 +678,23 @@
         (add-hook 'after-change-functions
                   #'my/schedule-alternate-lines-refresh
                   nil
+                  :local)
+        (add-hook 'window-scroll-functions
+                  #'my/refill-alternate-lines-when-needed
+                  nil
+                  :local)
+        (add-hook 'window-state-change-functions
+                  #'my/schedule-alternate-lines-refresh
+                  nil
                   :local))
 
     (remove-hook 'after-change-functions
+                 #'my/schedule-alternate-lines-refresh
+                 :local)
+    (remove-hook 'window-scroll-functions
+                 #'my/refill-alternate-lines-when-needed
+                 :local)
+    (remove-hook 'window-state-change-functions
                  #'my/schedule-alternate-lines-refresh
                  :local)
 
@@ -574,10 +707,22 @@
 (add-hook 'prog-mode-hook #'my/alternate-lines-mode)
 
 (defun my/refresh-alternate-lines ()
-  "Redraw alternating lines in every buffer using their minor mode."
+  "Update hooks and stripes in every buffer using their minor mode."
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (bound-and-true-p my/alternate-lines-mode)
+        ;; Replace hooks installed by earlier versions without requiring a
+        ;; restart or toggling the mode in every existing buffer.
+        (remove-hook 'window-scroll-functions
+                     #'my/schedule-alternate-lines-refresh
+                     :local)
+        (remove-hook 'window-scroll-functions
+                     #'my/apply-alternate-lines
+                     :local)
+        (add-hook 'window-scroll-functions
+                  #'my/refill-alternate-lines-when-needed
+                  nil
+                  :local)
         (my/apply-alternate-lines)))))
 
 
@@ -598,7 +743,8 @@
 
   (defun my/global-hl-line-hide-while-scrolling (original &rest arguments)
     "Call ORIGINAL with ARGUMENTS unless Scroll Restore displaced point."
-    (if my/scroll-restore-displaced-p
+    (if (window-parameter (selected-window)
+                          'my/scroll-restore-displaced)
         (global-hl-line-unhighlight)
       (apply original arguments)))
 
@@ -1077,12 +1223,10 @@ not unexpectedly initiate another slow gateway connection."
 (use-package general
   :after evil
   :config
-  (general-create-definer my/leader
+  (general-define-key
     :states '(normal visual motion)
     :keymaps 'override
-    :prefix "SPC")
-
-  (my/leader
+    :prefix "SPC"
     ""    '(:ignore t :which-key "leader")
     "SPC" '(execute-extended-command :which-key "command palette")
 
