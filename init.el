@@ -349,11 +349,122 @@
 (use-package scroll-restore
   :ensure t
   :config
-  (setq scroll-restore-handle-cursor t
+  (setq scroll-restore-handle-cursor 'type
+        scroll-restore-cursor-type nil
         scroll-restore-handle-region t
         scroll-restore-jump-back t)
 
   (scroll-restore-mode 1))
+
+(defun my/scroll-restore-point-offscreen-p ()
+  "Return non-nil when Scroll Restore is holding point off-screen."
+  (when (boundp 'scroll-restore-alist)
+    (when-let ((entry (assq (selected-window) scroll-restore-alist)))
+      (nth 3 entry))))
+
+(defun my/scroll-restore-original-position ()
+  "Return the remembered point while Scroll Restore holds it off-screen."
+  (when-let* ((entry (and (boundp 'scroll-restore-alist)
+                          (assq (selected-window) scroll-restore-alist)))
+              (offscreen (nth 3 entry))
+              (original (marker-position (nth 2 entry))))
+    original))
+
+(defvar-local my/scroll-restore-line-number-remap nil
+  "Face-remapping cookie used while Scroll Restore displaces point.")
+
+(defvar-local my/scroll-restore-mode-line-position nil
+  "Remembered point shown while Scroll Restore hides the real cursor.")
+
+(defvar-local my/scroll-restore-displaced-p nil
+  "Non-nil while the cursor-off-screen visual state is active.")
+
+(defun my/scroll-restore-update-cursor-visibility ()
+  "Hide cursor-related visuals while the real point is off-screen."
+  (let* ((was-displaced my/scroll-restore-displaced-p)
+         (displaced
+          (and (my/scroll-restore-point-offscreen-p)
+               (get this-command 'scroll-restore))))
+    (setq my/scroll-restore-displaced-p displaced)
+
+    ;; Evil can restore its state-specific cursor after Scroll Restore changes
+    ;; `cursor-type', so enforce both the buffer and window display settings.
+    (when displaced
+      (setq cursor-type nil))
+    (internal-show-cursor (selected-window) (not displaced))
+
+    ;; Snapshot the remembered point in the same update that controls the
+    ;; visual illusion.  Consulting Scroll Restore's alist during mode-line
+    ;; redisplay can otherwise expose a stale marker after ordinary movement.
+    (setq my/scroll-restore-mode-line-position
+          (and displaced
+               (my/scroll-restore-original-position)))
+
+    ;; Keep the active-line overlay synchronized with the same visual state.
+    (cond
+     (displaced
+      (global-hl-line-unhighlight))
+     (was-displaced
+      (global-hl-line-highlight)))
+
+    ;; The line-number gutter highlights the surrogate cursor line separately
+    ;; from `hl-line'.  Make it look like an ordinary line number while the
+    ;; real point is displaced, then restore its normal face automatically.
+    (cond
+     ((and displaced (null my/scroll-restore-line-number-remap))
+      (setq my/scroll-restore-line-number-remap
+            (face-remap-add-relative 'line-number-current-line
+                                     'line-number)))
+     ((and (not displaced) my/scroll-restore-line-number-remap)
+      (face-remap-remove-relative my/scroll-restore-line-number-remap)
+      (setq my/scroll-restore-line-number-remap nil)))
+
+    ;; Unlike the built-in %l/%c constructs, our evaluated position strings
+    ;; are not automatically invalidated by every ordinary point motion.
+    (force-mode-line-update)))
+
+;; Run after Scroll Restore and modal-editing post-command updates.
+(add-hook 'post-command-hook
+          #'my/scroll-restore-update-cursor-visibility
+          95)
+
+(defun my/mode-line-point-position ()
+  "Return the position represented as point in the mode line."
+  (or my/scroll-restore-mode-line-position
+      (point)))
+
+(defun my/mode-line-point-percent ()
+  "Return point's percentage through the accessible buffer."
+  (let* ((position (my/mode-line-point-position))
+         (start (point-min))
+         (end (point-max))
+         (size (- end start)))
+    (cond
+     ((zerop size) "All")
+     ((<= position start) "Top")
+     ((>= position end) "Bot")
+     ;; Mode-line strings interpret percent signs, so double the literal one.
+     (t (format "%d%%%%"
+                (floor (* 100.0 (/ (- position start)
+                                   (float size)))))))))
+
+(defun my/mode-line-line-and-column ()
+  "Return the real point's line and column during Scroll Restore displacement."
+  (save-excursion
+    (goto-char (my/mode-line-point-position))
+    (format "(%d,%d)" (line-number-at-pos) (current-column))))
+
+;; Derive every position indicator from the remembered point so scrolling the
+;; viewport does not undermine the illusion that point remains off-screen.
+(setq-default mode-line-position
+              '((:propertize
+                 (:eval (my/mode-line-point-percent))
+                 display (min-width (5.0))
+                 help-echo "Point position in buffer")
+                (:propertize
+                 (:eval (concat " " (my/mode-line-line-and-column)))
+                 display (min-width (10.0))
+                 help-echo "Point line and column")))
 
 (setq mouse-wheel-follow-mouse t
       mouse-wheel-progressive-speed nil)
@@ -484,6 +595,18 @@
    nil
    :background "#ccd0da"
    :extend t)
+
+  (defun my/global-hl-line-hide-while-scrolling (original &rest arguments)
+    "Call ORIGINAL with ARGUMENTS unless Scroll Restore displaced point."
+    (if my/scroll-restore-displaced-p
+        (global-hl-line-unhighlight)
+      (apply original arguments)))
+
+  (unless (advice-member-p #'my/global-hl-line-hide-while-scrolling
+                           #'global-hl-line-highlight)
+    (advice-add #'global-hl-line-highlight
+                :around
+                #'my/global-hl-line-hide-while-scrolling))
 
   (global-hl-line-mode 1))
 
