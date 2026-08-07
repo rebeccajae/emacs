@@ -47,58 +47,6 @@
   (load custom-file :no-error))
 
 
-;;; Personal Commands
-
-(defun my/open-config ()
-  "Open my Emacs configuration."
-  (interactive)
-  (find-file user-init-file))
-
-(defvar my/emacs-notes-file
-  (expand-file-name "notes.org" user-emacs-directory)
-  "Path to my personal Emacs notes.")
-
-(defun my/open-emacs-notes ()
-  "Open my personal Emacs notes."
-  (interactive)
-  (find-file my/emacs-notes-file))
-
-(defun my/open-scratch ()
-  "Open the Emacs scratch buffer."
-  (interactive)
-  (switch-to-buffer "*scratch*"))
-
-(defun my/find-remote-file ()
-  "Prompt for a remote file using TRAMP."
-  (interactive)
-  (find-file
-   (read-file-name "Remote file: " "/ssh:")))
-
-(defun my/refresh-alternate-lines ()
-  "Redraw alternating lines in every buffer using their minor mode."
-  (dolist (buffer (buffer-list))
-    (with-current-buffer buffer
-      (when (bound-and-true-p my/alternate-lines-mode)
-        (my/apply-alternate-lines)))))
-
-(defun my/reload-config ()
-  "Reload this configuration and refresh its visual state."
-  (interactive)
-  (load-file user-init-file)
-  (my/refresh-alternate-lines)
-  (message "Configuration reloaded."))
-
-(defun my/open-explorer ()
-  "Open the explorer."
-  (interactive)
-
-  (if my/current-workspace-root
-      (my/show-explorer)
-    (my/select-explorer-root)))
-
-;; Temporary escape hatch while the leader-key setup evolves.
-(keymap-global-set "C-c r" #'my/reload-config)
-
 ;;; Local Private Configuration
 
 ;; Machine-specific or private values live in local.el.
@@ -141,14 +89,37 @@
   (load my/local-config-file :no-error))
 
 
-;;; Remote Targets
+;;; Configuration Commands
 
+(defun my/open-config ()
+  "Open my Emacs configuration."
+  (interactive)
+  (find-file user-init-file))
+
+(defun my/reload-config ()
+  "Reload this configuration and refresh its visual state."
+  (interactive)
+  (load-file user-init-file)
+  (my/refresh-alternate-lines)
+  (message "Configuration reloaded."))
+
+;; Temporary escape hatch while the leader-key setup evolves.
+(keymap-global-set "C-c r" #'my/reload-config)
+
+
+;;; Remote Targets
 
 (with-eval-after-load 'tramp
   (setopt tramp-remote-path '(tramp-own-remote-path))
   (add-to-list
    'tramp-connection-properties
    (list ".*" "remote-shell" "/bin/bash")))
+
+(defun my/find-remote-file ()
+  "Prompt for a remote file using TRAMP."
+  (interactive)
+  (find-file
+   (read-file-name "Remote file: " "/ssh:")))
 
 (defun my/remote-target-path (target)
   "Build a TRAMP path from TARGET."
@@ -263,31 +234,6 @@
     (my/open-workspace-root path)))
 
 
-(defun my/disconnect-remotes ()
-  "Return from a remote workspace to a local state."
-  (interactive)
-
-  ;; Close remote file buffers.
-  (dolist (buffer (buffer-list))
-    (with-current-buffer buffer
-      (when (file-remote-p default-directory)
-        (kill-buffer buffer))))
-
-  ;; Close remote terminals.
-  (dolist (buffer (buffer-list))
-    (when (string-prefix-p "*terminal:"
-                           (buffer-name buffer))
-      (kill-buffer buffer)))
-
-  ;; Disconnect TRAMP.
-  (tramp-cleanup-all-connections)
-
-  ;; clear explorer
-  (my/clear-explorer)
-  
-  (message "Remote workspace disconnected."))
-
-
 ;;; Remote Indicators
 
 (defun my/remote-location-label ()
@@ -297,10 +243,17 @@
             (or (file-remote-p remote 'host)
                 remote))))
 
+(defconst my/remote-mode-line-entry
+  '(:eval (my/remote-location-label))
+  "Mode-line entry that displays the current remote host.")
+
+;; Replace our entry when reloading instead of appending another copy.
 (setq-default mode-line-format
               (append
-               mode-line-format
-               '((:eval (my/remote-location-label)))))
+               (cl-remove my/remote-mode-line-entry
+                          mode-line-format
+                          :test #'equal)
+               (list my/remote-mode-line-entry)))
 
 (setq frame-title-format
       '(:eval
@@ -505,12 +458,23 @@
 
 (add-hook 'prog-mode-hook #'my/alternate-lines-mode)
 
+(defun my/refresh-alternate-lines ()
+  "Redraw alternating lines in every buffer using their minor mode."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (bound-and-true-p my/alternate-lines-mode)
+        (my/apply-alternate-lines)))))
+
 
 ;;;; Current Line
 
 (use-package hl-line
   :ensure nil
   :config
+  ;; Stripe overlays use a background face too, so ensure the current-line
+  ;; overlay wins when both cover the same text.
+  (setq hl-line-overlay-priority 100)
+
   (set-face-attribute
    'hl-line
    nil
@@ -558,6 +522,20 @@
 
 ;; Treat `;;;` and `;;;;` headings as foldable document sections.
 (add-hook 'emacs-lisp-mode-hook #'outline-minor-mode)
+
+(defvar my/emacs-notes-file
+  (expand-file-name "notes.org" user-emacs-directory)
+  "Path to my personal Emacs notes.")
+
+(defun my/open-emacs-notes ()
+  "Open my personal Emacs notes."
+  (interactive)
+  (find-file my/emacs-notes-file))
+
+(defun my/open-scratch ()
+  "Open the Emacs scratch buffer."
+  (interactive)
+  (switch-to-buffer "*scratch*"))
 
 
 ;;; Editing
@@ -630,6 +608,13 @@
 
   (treemacs-follow-mode 1)
   (treemacs-filewatch-mode 1))
+
+(defun my/open-explorer ()
+  "Open the explorer."
+  (interactive)
+  (if my/current-workspace-root
+      (my/show-explorer)
+    (my/select-explorer-root)))
 
 
 ;;; Window Layout
@@ -734,6 +719,8 @@
 
 (use-package vterm
   :commands vterm
+  :hook
+  (vterm-mode . my/disable-global-hl-line)
   :custom
   (vterm-max-scrollback 10000)
   :config
@@ -741,10 +728,24 @@
   (add-to-list 'vterm-tramp-shells '(t "/bin/bash")))
 
 (defun my/terminal-location-name ()
-  "Return a short name for the current local or remote location."
-  (if-let ((host (file-remote-p default-directory 'host)))
-      host
-    "local"))
+  "Return a distinct name for the current local or remote directory."
+  (let* ((remote (file-remote-p default-directory))
+         (directory
+          (directory-file-name
+           (abbreviate-file-name
+            (or (file-remote-p default-directory 'localname)
+                default-directory)))))
+    (if remote
+        (format "%s:%s"
+                (or (file-remote-p default-directory 'host)
+                    remote)
+                directory)
+      directory)))
+
+(defun my/disable-global-hl-line ()
+  "Disable the global current-line highlight in this buffer."
+  (setq-local global-hl-line-mode nil)
+  (global-hl-line-unhighlight))
 
 (defun my/terminal-buffer-name ()
   "Return the terminal buffer name for the current location."
@@ -753,6 +754,20 @@
 (defun my/terminal-buffer-p (buffer)
   "Return non-nil when BUFFER is one of my terminal buffers."
   (string-prefix-p "*terminal:" (buffer-name buffer)))
+
+(defun my/disconnect-remotes ()
+  "Return from a remote workspace to a local state."
+  (interactive)
+
+  ;; Close remote file and terminal buffers.
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (file-remote-p default-directory)
+        (kill-buffer buffer))))
+
+  (tramp-cleanup-all-connections)
+  (my/clear-explorer)
+  (message "Remote workspace disconnected."))
 
 (defun my/editor-window-p (window)
   "Return non-nil when WINDOW is suitable for normal editor content."
@@ -805,7 +820,13 @@ exist."
         (switch-to-buffer buffer)
 
       (let ((default-directory origin-directory))
-        (vterm buffer-name)))))
+        (vterm buffer-name)))
+
+    ;; A newly split window initially inherits the editor buffer.  Once the
+    ;; terminal is displayed, remove that inherited buffer from this window's
+    ;; history so the tab line contains only the terminal.
+    (set-window-prev-buffers terminal-window nil)
+    (set-window-next-buffers terminal-window nil)))
 
 (defun my/toggle-terminal ()
   "Show or hide the terminal for the current local or remote location."
@@ -916,10 +937,37 @@ not unexpectedly initiate another slow gateway connection."
     ;; Actions
 
     "a"   '(:ignore t :which-key "Actions")
-    "a e" '(eval-last-sexp :which-key "Evaluate expression")
     "a b" '(eval-buffer :which-key "evaluate Buffer")
+    "a e" '(eval-last-sexp :which-key "Evaluate expression")
     "a r" '(eval-region :which-key "evaluate Region")
     "a s" '(my/open-scratch :which-key "Scratch buffer")
+
+    ;; Code
+
+    "c"   '(:ignore t :which-key "Code")
+    "c a" '(eglot-code-actions :which-key "Actions")
+    "c b" '(xref-go-back :which-key "go Back")
+    "c d" '(xref-find-definitions :which-key "Definition")
+    "c f" '(eglot-format-buffer :which-key "Format")
+    "c h" '(eldoc-doc-buffer :which-key "Help at point")
+    "c l" '(eglot :which-key "start LSP")
+    "c r" '(xref-find-references :which-key "References")
+    "c w" '(xref-go-forward :which-key "go forWard")
+
+    ;; Files
+
+    "f"   '(:ignore t :which-key "Files")
+    "f f" '(find-file :which-key "Find")
+    "f s" '(save-buffer :which-key "Save")
+
+    ;; Help
+
+    "h"   '(:ignore t :which-key "Help")
+    "h f" '(describe-function :which-key "describe Function")
+    "h k" '(describe-key :which-key "describe Key")
+    "h m" '(describe-mode :which-key "describe Mode")
+    "h n" '(my/open-emacs-notes :which-key "Notes")
+    "h v" '(describe-variable :which-key "describe Variable")
 
     ;; Configuration
 
@@ -928,70 +976,37 @@ not unexpectedly initiate another slow gateway connection."
     "n l" '(my/open-local-config :which-key "edit Local")
     "n r" '(my/reload-config :which-key "Reload")
 
-    ;; Files
+    ;; Quit
 
-    "f"   '(:ignore t :which-key "Files")
-    "f f" '(find-file :which-key "Find")
-    "f s" '(save-buffer :which-key "Save")
+    "q"   '(:ignore t :which-key "Quit")
+    "q q" '(save-buffers-kill-terminal :which-key "Quit Emacs")
 
     ;; Remote
 
     "r"   '(:ignore t :which-key "Remote")
-    "r r" '(my/open-remote-target :which-key "Remote picker")
-    "r f" '(my/find-remote-file :which-key "Find remote file")
     "r d" '(my/disconnect-remotes :which-key "Disconnect all")
-
-    ;; Help
-
-    "h"   '(:ignore t :which-key "Help")
-    "h k" '(describe-key :which-key "describe Key")
-    "h f" '(describe-function :which-key "describe Function")
-    "h v" '(describe-variable :which-key "describe Variable")
-    "h n" '(my/open-emacs-notes :which-key "Notes")
-    "h m" '(describe-mode :which-key "describe Mode")
-
-    ;; Code
-
-    "c"   '(:ignore t :which-key "Code")
-    "c l" '(eglot :which-key "start LSP")
-    "c d" '(xref-find-definitions :which-key "Definition")
-    "c r" '(xref-find-references :which-key "References")
-    "c b" '(xref-go-back :which-key "go Back")
-    "c w" '(xref-go-forward :which-key "go forWard")
-    "c a" '(eglot-code-actions :which-key "Actions")
-    "c f" '(eglot-format-buffer :which-key "Format")
-    "c h" '(eldoc-doc-buffer :which-key "Help at point")
-
-    ;; Windows
-
-    "w"   '(:ignore t :which-key "Window")
-    "w t" '(my/open-explorer :which-key "Tree")
-    "w v" '(split-window-right :which-key "split Vertical")
-    "w z" '(split-window-below :which-key "split horiZontal")
-    "w d" '(delete-window :which-key "Delete")
-    "w o" '(delete-other-windows :which-key "Only this")
-
-    ;; Navigation uses hjkl, but Which-Key provides readable descriptions.
-
-    "w h" '(windmove-left :which-key "move left")
-    "w j" '(windmove-down :which-key "move down")
-    "w k" '(windmove-up :which-key "move up")
-    "w l" '(windmove-right :which-key "move right")
-
-    ;; Layout profiles
-
-    "w w" '(my/layout-wide :which-key "Wide layout")
-    "w c" '(my/layout-compact :which-key "Compact layout")
-    "w a" '(my/layout-automatic :which-key "Automatic layout")
+    "r f" '(my/find-remote-file :which-key "Find remote file")
+    "r r" '(my/open-remote-target :which-key "Remote picker")
 
     ;; Terminal
 
     "t"   '(:ignore t :which-key "Terminal")
     "t t" '(my/toggle-terminal :which-key "Toggle")
 
-    ;; Quit
+    ;; Windows
 
-    "q"   '(:ignore t :which-key "Quit")
-    "q q" '(save-buffers-kill-terminal :which-key "Quit Emacs")))
+    "w"   '(:ignore t :which-key "Window")
+    "w a" '(my/layout-automatic :which-key "Automatic layout")
+    "w c" '(my/layout-compact :which-key "Compact layout")
+    "w d" '(delete-window :which-key "Delete")
+    "w h" '(windmove-left :which-key "move left")
+    "w j" '(windmove-down :which-key "move down")
+    "w k" '(windmove-up :which-key "move up")
+    "w l" '(windmove-right :which-key "move right")
+    "w o" '(delete-other-windows :which-key "Only this")
+    "w t" '(my/open-explorer :which-key "Tree")
+    "w v" '(split-window-right :which-key "split Vertical")
+    "w w" '(my/layout-wide :which-key "Wide layout")
+    "w z" '(split-window-below :which-key "split horiZontal")))
 
 ;;; init.el ends here
