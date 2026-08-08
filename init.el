@@ -942,6 +942,15 @@ The normal path performs no buffer scan and creates no timer."
   (treemacs-follow-mode 1)
   (treemacs-filewatch-mode 1))
 
+(use-package all-the-icons
+  :ensure t)
+
+(use-package treemacs-all-the-icons
+  :ensure t
+  :after treemacs
+  :config
+  (treemacs-load-theme "all-the-icons"))
+
 (defun my/open-explorer ()
   "Open the explorer."
   (interactive)
@@ -1288,6 +1297,7 @@ not unexpectedly initiate another slow gateway connection."
     ;; Files
 
     "f"   '(:ignore t :which-key "Files")
+    "f d" '(my/select-explorer-root :which-key "open Directory")
     "f f" '(my/find-file-by-path :which-key "Find by path")
     "f s" '(save-buffer :which-key "Save")
 
