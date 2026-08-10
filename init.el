@@ -851,10 +851,17 @@ The normal path performs no buffer scan and creates no timer."
   (expand-file-name "notes.org" user-emacs-directory)
   "Path to my personal Emacs notes.")
 
+(defvar my/emacs-local-notes-file
+  (expand-file-name "local.org" user-emacs-directory))
+
 (defun my/open-emacs-notes ()
   "Open my personal Emacs notes."
   (interactive)
   (find-file my/emacs-notes-file))
+
+(defun my/open-emacs-local-notes ()
+  (interactive)
+  (find-file my/emacs-local-notes-file))
 
 (defun my/open-scratch ()
   "Open the Emacs scratch buffer."
@@ -1300,6 +1307,7 @@ not unexpectedly initiate another slow gateway connection."
     "f d" '(my/select-explorer-root :which-key "open Directory")
     "f f" '(my/find-file-by-path :which-key "Find by path")
     "f s" '(save-buffer :which-key "Save")
+    "f l" '(my/open-emacs-local-notes :which-key "open Local notes")
 
     ;; Help
 
